@@ -104,26 +104,38 @@ class P2PChat:
         sock_audio_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock_audio_recv.bind((self.my_ip, PORT_AUDIO))
 
+        data = b""
         while self.running:
             try:
-                # Receive audio data
-                audio_data, _ = sock_audio_recv.recvfrom(self.chunk_size)
-                
-                # Play the received audio data
-                self.play_audio(audio_data)
+                packet, _ = sock_audio_recv.recvfrom(self.chunk_size)
+                data += packet
+                if len(data) >= self.chunk_size:
+                    print(f"Received {len(data)} bytes of audio data.")
+                    self.play_audio(data)
+                    data = b""  # Reset data after playing
             except Exception as e:
                 print(f"[ERROR] Audio receive error: {e}")
                 break
 
+
     def play_audio(self, audio_data):
         """Play received audio data."""
-        if not hasattr(self, 'audio_stream'):  # Only create once
-            self.audio_stream = self.audio.open(format=self.sample_format,
-                                                channels=self.channels,
-                                                rate=self.rate,
-                                                frames_per_buffer=self.chunk_size,
-                                                output=True)
-        self.audio_stream.write(audio_data)
+        if not hasattr(self, 'audio_stream') or self.audio_stream is None:
+            try:
+                self.audio_stream = self.audio.open(format=self.sample_format,
+                                                    channels=self.channels,
+                                                    rate=self.rate,
+                                                    frames_per_buffer=self.chunk_size,
+                                                    output=True)
+            except Exception as e:
+                print(f"[ERROR] Failed to initialize audio stream: {e}")
+                return
+
+        try:
+            self.audio_stream.write(audio_data)
+        except Exception as e:
+            print(f"[ERROR] Failed to play audio: {e}")
+
 
 
     def send_video(self):
