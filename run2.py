@@ -5,12 +5,11 @@ import pickle
 import struct
 import tkinter as tk
 from tkinter import simpledialog, scrolledtext
-import numpy as np
 
 # Configuration
-PORT_TEXT = 12345  # Port for text messages
-PORT_VIDEO = 12346  # Port for video streaming
-BUFFER_SIZE = 4096  # Maximum UDP packet size
+PORT_TEXT = 12345  # Text messages
+PORT_VIDEO = 12346  # Video stream
+BUFFER_SIZE = 4096  # UDP packet size
 
 class P2PChat:
     def __init__(self, root):
@@ -69,7 +68,7 @@ class P2PChat:
             self.entry.delete(0, tk.END)
 
     def send_video(self):
-        """Send video frames in smaller UDP packets"""
+        """Send video frames"""
         cap = cv2.VideoCapture(0)  # Capture from webcam
         sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -78,17 +77,19 @@ class P2PChat:
             if not ret:
                 break
 
-            # Compress frame to JPEG format
+            # Compress frame (JPEG)
             _, frame_encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
             data = pickle.dumps(frame_encoded)
 
-            # Send the length of data first (optional but helps for synchronization)
-            data_length = len(data)
-            sock_video.sendto(struct.pack("!I", data_length), (self.target_ip, PORT_VIDEO))
+            # Send frame size first
+            sock_video.sendto(struct.pack("Q", len(data)), (self.target_ip, PORT_VIDEO))
 
-            # Split data into chunks
+            # Send frame in chunks
             for i in range(0, len(data), BUFFER_SIZE):
                 sock_video.sendto(data[i:i + BUFFER_SIZE], (self.target_ip, PORT_VIDEO))
+
+            # Display the local webcam feed
+            cv2.imshow("Local Video Feed", frame)
 
         cap.release()
 
@@ -98,25 +99,32 @@ class P2PChat:
         sock_video.bind((self.my_ip, PORT_VIDEO))
 
         data = b""
+        payload_size = struct.calcsize("Q")  # 8-byte size header
 
         while self.running:
             try:
-                packet, _ = sock_video.recvfrom(BUFFER_SIZE)
-                if not data:  # If no previous data, try receiving the length first
-                    data_length = struct.unpack("!I", packet)[0]  # Get the length of the full frame
-                    data = b""  # Reset for the new frame
+                # Receive frame size
+                while len(data) < payload_size:
+                    packet, _ = sock_video.recvfrom(BUFFER_SIZE)
+                    data += packet
+                
+                packed_msg_size = data[:payload_size]
+                data = data[payload_size:]
+                msg_size = struct.unpack("Q", packed_msg_size)[0]
 
-                data += packet
+                # Receive frame data
+                while len(data) < msg_size:
+                    packet, _ = sock_video.recvfrom(BUFFER_SIZE)
+                    data += packet
 
-                # Check if the entire frame has been received
-                if len(data) >= data_length:
-                    frame_encoded = pickle.loads(data)
-                    frame = cv2.imdecode(frame_encoded, cv2.IMREAD_COLOR)
+                frame_data = data[:msg_size]
+                data = data[msg_size:]
 
-                    # Show video frame
-                    cv2.imshow("Video Chat", frame)
-                    data = b""  # Reset buffer after displaying
+                # Decode and display frame
+                frame_encoded = pickle.loads(frame_data)
+                frame = cv2.imdecode(frame_encoded, cv2.IMREAD_COLOR)
 
+                cv2.imshow("Video Chat", frame)
                 if cv2.waitKey(1) == 27:  # Press 'Esc' to exit
                     break
             except:
