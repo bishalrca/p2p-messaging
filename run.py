@@ -1,24 +1,35 @@
 import socket
 import threading
+import pyaudio
 import cv2
 import pickle
 import struct
 import tkinter as tk
 from tkinter import simpledialog, scrolledtext
 from PIL import Image, ImageTk
+import queue
+import time
+import numpy as np
 
 # Configuration
 PORT_TEXT = 12345
 PORT_VIDEO = 12346
+PORT_AUDIO = 12347  # Port for audio
 BUFFER_SIZE = 4096 * 10
+
+# Create a queue for audio data
+audio_queue = queue.Queue(maxsize=10)  # Buffer size for audio queue
+
+# Audio silence detection threshold
+SILENCE_THRESHOLD = 1000  # RMS threshold to consider as silence
 
 class P2PChat:
     def __init__(self, root):
         self.root = root
         self.root.title("P2P Chat")
         self.root.geometry("800x600")
-
-        # UI Elements
+        
+        # UI Elements for Chat and Video
         self.chat_area = scrolledtext.ScrolledText(root, wrap=tk.WORD, state=tk.DISABLED)
         self.chat_area.pack(padx=10, pady=10, expand=True, fill=tk.BOTH)
 
@@ -31,15 +42,13 @@ class P2PChat:
         self.exit_button = tk.Button(root, text="Exit", command=self.exit_chat, bg="red", fg="white")
         self.exit_button.pack(padx=10, pady=5, fill=tk.X)
 
-        # Video frame layout (using grid to allow resizing)
         self.video_frame = tk.Frame(root)
         self.video_frame.pack(padx=10, pady=10, expand=True, fill=tk.BOTH)
 
-        # Local Video Canvas (top-left)
+        # Local and Peer Video Canvas
         self.local_video_canvas = tk.Canvas(self.video_frame, bg="black")
         self.local_video_canvas.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
-
-        # Peer Video Canvas (top-right)
+        
         self.peer_video_canvas = tk.Canvas(self.video_frame, bg="black")
         self.peer_video_canvas.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
 
@@ -48,53 +57,111 @@ class P2PChat:
         self.video_frame.grid_columnconfigure(0, weight=1)
         self.video_frame.grid_columnconfigure(1, weight=1)
 
-        # Networking
+        # Audio configurations
+        self.chunk_size = 1024 * 30
+        self.sample_format = pyaudio.paInt16
+        self.channels = 1
+        self.rate = 44100
+
+        # Initialize PyAudio for audio capture
+        self.audio = pyaudio.PyAudio()
+
+        # Networking setup for text, video, and audio
         self.my_ip = socket.gethostbyname(socket.gethostname())
         self.sock_text = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_text.bind((self.my_ip, PORT_TEXT))
 
+        self.sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock_audio = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        # User input for peer IP
         self.target_ip = simpledialog.askstring("Target IP", "Enter Peer IP:")
+        
         self.running = True
 
-        # Start threads
+        # Start threads for message, video, and audio
         threading.Thread(target=self.receive_messages, daemon=True).start()
         threading.Thread(target=self.send_video, daemon=True).start()
         threading.Thread(target=self.receive_video, daemon=True).start()
+        threading.Thread(target=self.send_audio, daemon=True).start()
+        threading.Thread(target=self.receive_audio, daemon=True).start()
+        threading.Thread(target=self.play_audio_from_queue, daemon=True).start()
 
-    def receive_messages(self):
-        """Receive messages and display in chat"""
+    def send_audio(self):
+        """Capture and send audio data."""
+        stream = self.audio.open(format=self.sample_format,
+                                channels=self.channels,
+                                rate=self.rate,
+                                frames_per_buffer=self.chunk_size,
+                                input=True)
+        
         while self.running:
             try:
-                data, addr = self.sock_text.recvfrom(BUFFER_SIZE)
-                msg = f"[{addr[0]}]: {data.decode()}\n"
-                self.chat_area.config(state=tk.NORMAL)
-                self.chat_area.insert(tk.END, msg)
-                self.chat_area.yview(tk.END)
-                self.chat_area.config(state=tk.DISABLED)
-            except:
+                # Read audio data from the microphone
+                audio_data = stream.read(self.chunk_size)
+                
+                # Calculate RMS to check if there is actual sound (not silent)
+                rms = np.sqrt(np.mean(np.square(np.frombuffer(audio_data, dtype=np.int16))))
+                
+                if rms > SILENCE_THRESHOLD:
+                    print(f"Sending {len(audio_data)} bytes of audio data with RMS {rms}")  # Log data sent
+                    # Send the audio data over UDP
+                    self.sock_audio.sendto(audio_data, (self.target_ip, PORT_AUDIO))
+                else:
+                    print(f"Silence detected (RMS: {rms}), not sending audio.")
+            except Exception as e:
+                print(f"[ERROR] Audio send error: {e}")
                 break
 
-    def send_message(self):
-        """Send message to peer"""
-        msg = self.entry.get()
-        if msg:
-            self.sock_text.sendto(msg.encode(), (self.target_ip, PORT_TEXT))
-            self.chat_area.config(state=tk.NORMAL)
-            self.chat_area.insert(tk.END, f"[You]: {msg}\n")
-            self.chat_area.yview(tk.END)
-            self.chat_area.config(state=tk.DISABLED)
-            self.entry.delete(0, tk.END)
 
-    def get_available_camera(self):
-        """Find the first available camera index."""
-        for i in range(5):  # Check indexes 0 to 4
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                print(f"✅ Using camera at index {i}")
-                cap.release()
-                return i
-        print("🚨 No available cameras detected!")
-        return None
+    def receive_audio(self):
+        """Receive and queue audio data from the peer."""
+        sock_audio_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock_audio_recv.bind((self.my_ip, PORT_AUDIO))
+
+        while self.running:
+            try:
+                packet, _ = sock_audio_recv.recvfrom(self.chunk_size)
+                if not audio_queue.full():  # Check if the queue is not full
+                    audio_queue.put(packet)  # Add the packet to the queue
+                else:
+                    print("[WARNING] Audio queue is full, discarding packet")
+            except Exception as e:
+                print(f"[ERROR] Audio receive error: {e}")
+                break
+
+    def play_audio(self, audio_data):
+        """Play received audio data."""
+        if not hasattr(self, 'audio_stream') or self.audio_stream is None:
+            try:
+                self.audio_stream = self.audio.open(format=self.sample_format,
+                                                    channels=self.channels,
+                                                    rate=self.rate,
+                                                    frames_per_buffer=self.chunk_size,
+                                                    output=True)
+            except Exception as e:
+                print(f"[ERROR] Failed to initialize audio stream: {e}")
+                return
+
+        try:
+            self.audio_stream.write(audio_data)
+        except Exception as e:
+            print(f"[ERROR] Failed to play audio: {e}")
+
+    def play_audio_from_queue(self):
+        """Dequeue and play audio data."""
+        while self.running:
+            try:
+                if not audio_queue.empty():  # If there is data to play
+                    audio_data = audio_queue.get_nowait()  # Get the audio data from the queue (non-blocking)
+                    self.play_audio(audio_data)  # Play the audio
+                    audio_queue.task_done()  # Mark the task as done
+                else:
+                    # If the queue is empty, sleep for a short time to avoid busy-waiting
+                    time.sleep(0.01)
+            except Exception as e:
+                print(f"[ERROR] Audio play error: {e}")
+                break
 
     def send_video(self):
         """Send video frames and display local video."""
@@ -104,7 +171,6 @@ class P2PChat:
             return
 
         cap = cv2.VideoCapture(camera_index)
-        sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         while self.running:
             ret, frame = cap.read()
@@ -120,74 +186,57 @@ class P2PChat:
             data = pickle.dumps(frame_encoded)
 
             # Send frame size first
-            sock_video.sendto(struct.pack("Q", len(data)), (self.target_ip, PORT_VIDEO))
+            self.sock_video.sendto(struct.pack("Q", len(data)), (self.target_ip, PORT_VIDEO))
 
             # Send frame in chunks
             for i in range(0, len(data), BUFFER_SIZE):
-                sock_video.sendto(data[i:i + BUFFER_SIZE], (self.target_ip, PORT_VIDEO))
-
-            # Break loop if 'Esc' is pressed
-            if cv2.waitKey(1) == 27:
-                break
+                self.sock_video.sendto(data[i:i + BUFFER_SIZE], (self.target_ip, PORT_VIDEO))
 
         cap.release()
-        cv2.destroyAllWindows()
 
     def receive_video(self):
         """Receive and display peer's video."""
-        sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock_video.bind((self.my_ip, PORT_VIDEO))
+        sock_video_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock_video_recv.bind((self.my_ip, PORT_VIDEO))
 
         data = b""
         payload_size = struct.calcsize("Q")
 
         while self.running:
             try:
-                # Receive frame size
                 while len(data) < payload_size:
-                    packet, _ = sock_video.recvfrom(BUFFER_SIZE)
+                    packet, _ = sock_video_recv.recvfrom(BUFFER_SIZE)
                     data += packet
-                    print(f"Receiving frame size: {len(data)}")
 
                 packed_msg_size = data[:payload_size]
                 data = data[payload_size:]
                 msg_size = struct.unpack("Q", packed_msg_size)[0]
 
-                # Receive frame data
                 while len(data) < msg_size:
-                    packet, _ = sock_video.recvfrom(BUFFER_SIZE)
+                    packet, _ = sock_video_recv.recvfrom(BUFFER_SIZE)
                     data += packet
-                    break
-                    print(f"Receiving frame data: {len(data)}")
 
                 frame_data = data[:msg_size]
                 data = data[msg_size:]
 
-                # Decode and show received video
                 frame_encoded = pickle.loads(frame_data)
                 frame = cv2.imdecode(frame_encoded, cv2.IMREAD_COLOR)
-                print(f"Frame received: {frame.shape}")
 
                 self.show_peer_video(frame)
 
             except Exception as e:
                 print(f"[ERROR] Video receive error: {e}")
-                
 
-        sock_video.close()
-        cv2.destroyAllWindows()
+        sock_video_recv.close()
 
     def show_local_video(self, frame):
         """Show local webcam feed on the Tkinter canvas."""
-        # Get the canvas dimensions
         canvas_width = self.local_video_canvas.winfo_width()
         canvas_height = self.local_video_canvas.winfo_height()
 
-        # Calculate aspect ratio
         height, width = frame.shape[:2]
         aspect_ratio = width / height
 
-        # Resize the frame to fit within the canvas while maintaining aspect ratio
         if width > height:
             new_width = canvas_width
             new_height = int(new_width / aspect_ratio)
@@ -197,26 +246,21 @@ class P2PChat:
 
         resized_frame = cv2.resize(frame, (new_width, new_height))
 
-        # Convert the resized frame to RGB
         frame_rgb = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(frame_rgb)
         img_tk = ImageTk.PhotoImage(image=img)
 
-        # Display image on canvas
         self.local_video_canvas.create_image(0, 0, image=img_tk, anchor=tk.NW)
         self.local_video_canvas.image = img_tk  # Keep a reference to avoid garbage collection
 
     def show_peer_video(self, frame):
         """Show received video from the peer on the Tkinter canvas."""
-        # Get the canvas dimensions
         canvas_width = self.peer_video_canvas.winfo_width()
         canvas_height = self.peer_video_canvas.winfo_height()
 
-        # Calculate aspect ratio
         height, width = frame.shape[:2]
         aspect_ratio = width / height
 
-        # Resize the frame to fit within the canvas while maintaining aspect ratio
         if width > height:
             new_width = canvas_width
             new_height = int(new_width / aspect_ratio)
@@ -226,19 +270,54 @@ class P2PChat:
 
         resized_frame = cv2.resize(frame, (new_width, new_height))
 
-        # Convert the resized frame to RGB
         frame_rgb = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(frame_rgb)
         img_tk = ImageTk.PhotoImage(image=img)
 
-        # Display image on canvas
         self.peer_video_canvas.create_image(0, 0, image=img_tk, anchor=tk.NW)
         self.peer_video_canvas.image = img_tk  # Keep a reference to avoid garbage collection
+
+    def get_available_camera(self):
+        """Find the first available camera index."""
+        for i in range(5):  # Check indexes 0 to 4
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                cap.release()
+                return i
+        print("🚨 No available cameras detected!")
+        return None
+
+    def send_message(self):
+        """Send message to peer"""
+        msg = self.entry.get()
+        if msg:
+            self.sock_text.sendto(msg.encode(), (self.target_ip, PORT_TEXT))
+            self.chat_area.config(state=tk.NORMAL)
+            self.chat_area.insert(tk.END, f"[You]: {msg}\n")
+            self.chat_area.yview(tk.END)
+            self.chat_area.config(state=tk.DISABLED)
+            self.entry.delete(0, tk.END)
+
+    def receive_messages(self):
+        """Receive messages and display in chat"""
+        while self.running:
+            try:
+                data, addr = self.sock_text.recvfrom(BUFFER_SIZE)
+                msg = f"[{addr[0]}]: {data.decode()}\n"
+                self.chat_area.config(state=tk.NORMAL)
+                self.chat_area.insert(tk.END, msg)
+                self.chat_area.yview(tk.END)
+                self.chat_area.config(state=tk.DISABLED)
+            except:
+                break
 
     def exit_chat(self):
         """Exit the chat"""
         self.running = False
         self.sock_text.close()
+        self.sock_video.close()
+        self.sock_audio.close()  # Close audio socket
+        self.audio.terminate()   # Clean up PyAudio resources
         self.root.quit()
 
 # Run Application
@@ -246,4 +325,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = P2PChat(root)
     root.mainloop()
-
