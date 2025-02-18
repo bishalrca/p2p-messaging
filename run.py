@@ -1,16 +1,21 @@
 import socket
 import threading
+import cv2
+import pickle
+import struct
 import tkinter as tk
-from tkinter import scrolledtext,simpledialog
+from tkinter import simpledialog, scrolledtext
+import numpy as np
 
 # Configuration
-PORT = 12345  # Common port for communication
-BUFFER_SIZE = 1024
+PORT_TEXT = 12345  # Port for text messages
+PORT_VIDEO = 12346  # Port for video streaming
+BUFFER_SIZE = 4096  # Maximum UDP packet size
 
 class P2PChat:
     def __init__(self, root):
         self.root = root
-        self.root.title("P2P LAN Chat")
+        self.root.title("P2P Chat")
         self.root.geometry("400x500")
 
         # UI Elements
@@ -28,21 +33,22 @@ class P2PChat:
 
         # Networking
         self.my_ip = socket.gethostbyname(socket.gethostname())  # Get local IP
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind((self.my_ip, PORT))
+        self.sock_text = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock_text.bind((self.my_ip, PORT_TEXT))
 
         self.target_ip = simpledialog.askstring("Target IP", "Enter Peer IP:")
         self.running = True
 
-        # Start receiving thread
-        self.recv_thread = threading.Thread(target=self.receive_messages, daemon=True)
-        self.recv_thread.start()
+        # Start threads
+        threading.Thread(target=self.receive_messages, daemon=True).start()
+        threading.Thread(target=self.send_video, daemon=True).start()
+        threading.Thread(target=self.receive_video, daemon=True).start()
 
     def receive_messages(self):
         """Receive messages and display in chat"""
         while self.running:
             try:
-                data, addr = self.sock.recvfrom(BUFFER_SIZE)
+                data, addr = self.sock_text.recvfrom(BUFFER_SIZE)
                 msg = f"[{addr[0]}]: {data.decode()}\n"
                 self.chat_area.config(state=tk.NORMAL)
                 self.chat_area.insert(tk.END, msg)
@@ -55,17 +61,66 @@ class P2PChat:
         """Send message to peer"""
         msg = self.entry.get()
         if msg:
-            self.sock.sendto(msg.encode(), (self.target_ip, PORT))
+            self.sock_text.sendto(msg.encode(), (self.target_ip, PORT_TEXT))
             self.chat_area.config(state=tk.NORMAL)
             self.chat_area.insert(tk.END, f"[You]: {msg}\n")
             self.chat_area.yview(tk.END)
             self.chat_area.config(state=tk.DISABLED)
             self.entry.delete(0, tk.END)
 
+    def send_video(self):
+        """Send video frames in smaller UDP packets"""
+        cap = cv2.VideoCapture(0)  # Capture from webcam
+        sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        while self.running:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Compress frame to JPEG format
+            _, frame_encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
+            data = pickle.dumps(frame_encoded)
+
+            # Split data into chunks
+            for i in range(0, len(data), BUFFER_SIZE):
+                sock_video.sendto(data[i:i + BUFFER_SIZE], (self.target_ip, PORT_VIDEO))
+
+        cap.release()
+
+    def receive_video(self):
+        """Receive and reconstruct video frames"""
+        sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock_video.bind((self.my_ip, PORT_VIDEO))
+
+        data = b""
+
+        while self.running:
+            try:
+                packet, _ = sock_video.recvfrom(BUFFER_SIZE)
+                data += packet
+
+                # Check for a complete frame
+                if len(data) > 1000:
+                    frame_encoded = pickle.loads(data)
+                    frame = cv2.imdecode(frame_encoded, cv2.IMREAD_COLOR)
+
+                    # Show video frame
+                    cv2.imshow("Video Chat", frame)
+                    data = b""  # Reset buffer after displaying
+
+                if cv2.waitKey(1) == 27:  # Press 'Esc' to exit
+                    break
+            except:
+                break
+
+        sock_video.close()
+        cv2.destroyAllWindows()
+
     def exit_chat(self):
         """Exit the chat"""
         self.running = False
-        self.sock.close()
+        self.sock_text.close()
         self.root.quit()
 
 # Run Application
