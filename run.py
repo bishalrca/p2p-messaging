@@ -5,22 +5,22 @@ import pickle
 import struct
 import tkinter as tk
 from tkinter import simpledialog, scrolledtext
-import numpy as np
+from PIL import Image, ImageTk  # To display images in tkinter
 
 # Configuration
-PORT_TEXT = 12345  # Port for text messages
-PORT_VIDEO = 12346  # Port for video streaming
-BUFFER_SIZE = 4096  # Maximum UDP packet size
+PORT_TEXT = 12345  
+PORT_VIDEO = 12346  
+BUFFER_SIZE = 4096  
 
 class P2PChat:
     def __init__(self, root):
         self.root = root
         self.root.title("P2P Chat")
-        self.root.geometry("400x500")
+        self.root.geometry("800x500")  # Adjusted window size for video + chat
 
         # UI Elements
-        self.chat_area = scrolledtext.ScrolledText(root, wrap=tk.WORD, state=tk.DISABLED)
-        self.chat_area.pack(padx=10, pady=10, expand=True, fill=tk.BOTH)
+        self.chat_area = scrolledtext.ScrolledText(root, wrap=tk.WORD, state=tk.DISABLED, height=20, width=40)
+        self.chat_area.pack(side=tk.LEFT, padx=10, pady=10, expand=True, fill=tk.BOTH)
 
         self.entry = tk.Entry(root, font=("Arial", 12))
         self.entry.pack(padx=10, pady=5, fill=tk.X)
@@ -31,8 +31,12 @@ class P2PChat:
         self.exit_button = tk.Button(root, text="Exit", command=self.exit_chat, bg="red", fg="white")
         self.exit_button.pack(padx=10, pady=5, fill=tk.X)
 
+        # Peer Video Display
+        self.peer_video_label = tk.Label(root)
+        self.peer_video_label.pack(side=tk.RIGHT, padx=10, pady=10)
+
         # Networking
-        self.my_ip = socket.gethostbyname(socket.gethostname())  # Get local IP
+        self.my_ip = socket.gethostbyname(socket.gethostname())  
         self.sock_text = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_text.bind((self.my_ip, PORT_TEXT))
 
@@ -68,54 +72,90 @@ class P2PChat:
             self.chat_area.config(state=tk.DISABLED)
             self.entry.delete(0, tk.END)
 
+    def get_available_camera(self):
+        """Find the first available camera index."""
+        for i in range(5):  # Check indexes 0 to 4
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                print(f"✅ Using camera at index {i}")
+                cap.release()
+                return i
+        print("🚨 No available cameras detected!")
+        return None
+
     def send_video(self):
-        """Send video frames in smaller UDP packets"""
-        cap = cv2.VideoCapture(0)  # Capture from webcam
+        """Send video frames."""
+        camera_index = self.get_available_camera()
+        if camera_index is None:
+            print("[ERROR] No available camera. Exiting video thread.")
+            return
+
+        cap = cv2.VideoCapture(camera_index)  
         sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         while self.running:
             ret, frame = cap.read()
             if not ret:
+                print("[ERROR] Failed to read video frame.")
                 break
 
-            # Compress frame to JPEG format
+            # Encode and send
             _, frame_encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
             data = pickle.dumps(frame_encoded)
 
-            # Split data into chunks
+            # Send frame size first
+            sock_video.sendto(struct.pack("Q", len(data)), (self.target_ip, PORT_VIDEO))
+
+            # Send frame in chunks
             for i in range(0, len(data), BUFFER_SIZE):
                 sock_video.sendto(data[i:i + BUFFER_SIZE], (self.target_ip, PORT_VIDEO))
 
         cap.release()
 
     def receive_video(self):
-        """Receive and reconstruct video frames"""
+        """Receive and display peer's video."""
         sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock_video.bind((self.my_ip, PORT_VIDEO))
 
         data = b""
+        payload_size = struct.calcsize("Q")
 
         while self.running:
             try:
-                packet, _ = sock_video.recvfrom(BUFFER_SIZE)
-                data += packet
+                # Receive frame size
+                while len(data) < payload_size:
+                    packet, _ = sock_video.recvfrom(BUFFER_SIZE)
+                    data += packet
 
-                # Check for a complete frame
-                if len(data) > 1000:
-                    frame_encoded = pickle.loads(data)
-                    frame = cv2.imdecode(frame_encoded, cv2.IMREAD_COLOR)
+                packed_msg_size = data[:payload_size]
+                data = data[payload_size:]
+                msg_size = struct.unpack("Q", packed_msg_size)[0]
 
-                    # Show video frame
-                    cv2.imshow("Video Chat", frame)
-                    data = b""  # Reset buffer after displaying
+                # Receive frame data
+                while len(data) < msg_size:
+                    packet, _ = sock_video.recvfrom(BUFFER_SIZE)
+                    data += packet
 
-                if cv2.waitKey(1) == 27:  # Press 'Esc' to exit
-                    break
-            except:
+                frame_data = data[:msg_size]
+                data = data[msg_size:]
+
+                # Decode and show received video
+                frame_encoded = pickle.loads(frame_data)
+                frame = cv2.imdecode(frame_encoded, cv2.IMREAD_COLOR)
+
+                # Convert the frame to image and update the Tkinter label
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(frame_rgb)
+                imgtk = ImageTk.PhotoImage(image=img)
+
+                self.peer_video_label.config(image=imgtk)
+                self.peer_video_label.image = imgtk
+
+            except Exception as e:
+                print(f"[ERROR] Video receive error: {e}")
                 break
 
         sock_video.close()
-        cv2.destroyAllWindows()
 
     def exit_chat(self):
         """Exit the chat"""
