@@ -49,7 +49,7 @@ class P2PChat:
         self.video_frame.grid_columnconfigure(1, weight=1)
 
         # Audio configurations
-        self.chunk_size = 1024 * 50
+        self.chunk_size = 1024 * 30
         self.sample_format = pyaudio.paInt16
         self.channels = 1
         self.rate = 44100
@@ -102,9 +102,8 @@ class P2PChat:
     def receive_audio(self):
         """Receive and play audio data from the peer."""
         sock_audio_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock_audio_recv.bind((self.my_ip, PORT_AUDIO))
+        sock_audio_recv.bind(("0.0.0.0", PORT_AUDIO))  # Bind to all interfaces
 
-        data = b""
         while self.running:
             try:
                 packet, _ = sock_audio_recv.recvfrom(self.chunk_size)
@@ -113,13 +112,11 @@ class P2PChat:
 
                 print(f"🔊 Received {len(packet)} bytes of audio data.")  # Debugging
 
-                data += packet
-                if len(data) >= self.chunk_size:
-                    self.play_audio(data)
-                    data = b""  # Reset buffer
+                self.play_audio(packet)  # Play as soon as received
             except Exception as e:
                 print(f"[ERROR] Audio receive error: {e}")
                 break
+
 
 
 
@@ -142,6 +139,7 @@ class P2PChat:
             self.audio_stream.write(audio_data)
         except Exception as e:
             print(f"[ERROR] Failed to play audio: {e}")
+
 
             
 
