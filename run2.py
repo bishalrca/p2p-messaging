@@ -80,21 +80,24 @@ class P2PChat:
     def send_audio(self):
         """Capture and send audio data."""
         stream = self.audio.open(format=self.sample_format,
-                                 channels=self.channels,
-                                 rate=self.rate,
-                                 frames_per_buffer=self.chunk_size,
-                                 input=True)
+                                channels=self.channels,
+                                rate=self.rate,
+                                frames_per_buffer=self.chunk_size,
+                                input=True)
         
         while self.running:
             try:
                 # Read audio data from the microphone
                 audio_data = stream.read(self.chunk_size)
                 
+                print(f"Sending {len(audio_data)} bytes of audio data")  # Log data sent
+                
                 # Send the audio data over UDP
                 self.sock_audio.sendto(audio_data, (self.target_ip, PORT_AUDIO))
             except Exception as e:
                 print(f"[ERROR] Audio send error: {e}")
                 break
+
 
     def receive_audio(self):
         """Receive and play audio data from the peer."""
@@ -114,12 +117,14 @@ class P2PChat:
 
     def play_audio(self, audio_data):
         """Play received audio data."""
-        stream = self.audio.open(format=self.sample_format,
-                                 channels=self.channels,
-                                 rate=self.rate,
-                                 frames_per_buffer=self.chunk_size,
-                                 output=True)
-        stream.write(audio_data)
+        if not hasattr(self, 'audio_stream'):  # Only create once
+            self.audio_stream = self.audio.open(format=self.sample_format,
+                                                channels=self.channels,
+                                                rate=self.rate,
+                                                frames_per_buffer=self.chunk_size,
+                                                output=True)
+        self.audio_stream.write(audio_data)
+
 
     def send_video(self):
         """Send video frames and display local video."""
