@@ -5,44 +5,51 @@ import pickle
 import struct
 import tkinter as tk
 from tkinter import simpledialog, scrolledtext
-from PIL import Image, ImageTk  # PIL for converting OpenCV images to Tkinter format
+from PIL import Image, ImageTk
 
 # Configuration
-PORT_TEXT = 12345  
-PORT_VIDEO = 12346  
-BUFFER_SIZE = 4096  
+PORT_TEXT = 12345
+PORT_VIDEO = 12346
+BUFFER_SIZE = 4096
 
 class P2PChat:
     def __init__(self, root):
         self.root = root
         self.root.title("P2P Chat")
-        self.root.geometry("800x600")  # Increased size for video and chat
+        self.root.geometry("800x600")
 
         # UI Elements
-        self.video_frame = tk.Frame(root)  # Frame for video feeds
-        self.video_frame.grid(row=0, column=0, padx=10, pady=10)
-
-        self.local_video_canvas = tk.Canvas(self.video_frame, width=320, height=240)
-        self.local_video_canvas.grid(row=0, column=0, padx=10, pady=10)
-
-        self.peer_video_canvas = tk.Canvas(self.video_frame, width=320, height=240)
-        self.peer_video_canvas.grid(row=0, column=1, padx=10, pady=10)
-
-        # Chat UI Elements
-        self.chat_area = scrolledtext.ScrolledText(root, wrap=tk.WORD, state=tk.DISABLED, height=8)
-        self.chat_area.grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        self.chat_area = scrolledtext.ScrolledText(root, wrap=tk.WORD, state=tk.DISABLED)
+        self.chat_area.pack(padx=10, pady=10, expand=True, fill=tk.BOTH)
 
         self.entry = tk.Entry(root, font=("Arial", 12))
-        self.entry.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        self.entry.pack(padx=10, pady=5, fill=tk.X)
 
         self.send_button = tk.Button(root, text="Send", command=self.send_message)
-        self.send_button.grid(row=2, column=1, padx=10, pady=5)
+        self.send_button.pack(padx=10, pady=5, fill=tk.X)
 
         self.exit_button = tk.Button(root, text="Exit", command=self.exit_chat, bg="red", fg="white")
-        self.exit_button.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.exit_button.pack(padx=10, pady=5, fill=tk.X)
+
+        # Video frame layout (using grid to allow resizing)
+        self.video_frame = tk.Frame(root)
+        self.video_frame.pack(padx=10, pady=10, expand=True, fill=tk.BOTH)
+
+        # Local Video Canvas (top-left)
+        self.local_video_canvas = tk.Canvas(self.video_frame, bg="black")
+        self.local_video_canvas.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+
+        # Peer Video Canvas (top-right)
+        self.peer_video_canvas = tk.Canvas(self.video_frame, bg="black")
+        self.peer_video_canvas.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
+
+        # Make the video columns resizable
+        self.video_frame.grid_rowconfigure(0, weight=1)
+        self.video_frame.grid_columnconfigure(0, weight=1)
+        self.video_frame.grid_columnconfigure(1, weight=1)
 
         # Networking
-        self.my_ip = socket.gethostbyname(socket.gethostname())  
+        self.my_ip = socket.gethostbyname(socket.gethostname())
         self.sock_text = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_text.bind((self.my_ip, PORT_TEXT))
 
@@ -53,7 +60,6 @@ class P2PChat:
         threading.Thread(target=self.receive_messages, daemon=True).start()
         threading.Thread(target=self.send_video, daemon=True).start()
         threading.Thread(target=self.receive_video, daemon=True).start()
-        # threading.Thread(target=self.show_my_video, daemon=True).start()  # Show local video in the top-left corner
 
     def receive_messages(self):
         """Receive messages and display in chat"""
@@ -97,7 +103,7 @@ class P2PChat:
             print("[ERROR] No available camera. Exiting video thread.")
             return
 
-        cap = cv2.VideoCapture(camera_index)  
+        cap = cv2.VideoCapture(camera_index)
         sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         while self.running:
@@ -166,7 +172,7 @@ class P2PChat:
 
         sock_video.close()
         cv2.destroyAllWindows()
-    
+
     def show_local_video(self, frame):
         """Show local webcam feed on the Tkinter canvas."""
         # Get the canvas dimensions
@@ -224,7 +230,6 @@ class P2PChat:
         # Display image on canvas
         self.peer_video_canvas.create_image(0, 0, image=img_tk, anchor=tk.NW)
         self.peer_video_canvas.image = img_tk  # Keep a reference to avoid garbage collection
-
 
     def exit_chat(self):
         """Exit the chat"""
