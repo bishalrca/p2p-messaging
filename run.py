@@ -17,7 +17,7 @@ def receive_messages(sock):
 def send_messages(sock, target_ip):
     """Function to send messages"""
     while True:
-        msg = input("")
+        msg = input(">>")
         if msg.lower() == "exit":
             print("Exiting chat...")
             break
