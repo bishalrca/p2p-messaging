@@ -147,6 +147,7 @@ class P2PChat:
                 while len(data) < payload_size:
                     packet, _ = sock_video.recvfrom(BUFFER_SIZE)
                     data += packet
+                    print(f"Receiving frame size: {len(data)}")
 
                 packed_msg_size = data[:payload_size]
                 data = data[payload_size:]
@@ -156,6 +157,7 @@ class P2PChat:
                 while len(data) < msg_size:
                     packet, _ = sock_video.recvfrom(BUFFER_SIZE)
                     data += packet
+                    print(f"Receiving frame data: {len(data)}")
 
                 frame_data = data[:msg_size]
                 data = data[msg_size:]
@@ -163,6 +165,7 @@ class P2PChat:
                 # Decode and show received video
                 frame_encoded = pickle.loads(frame_data)
                 frame = cv2.imdecode(frame_encoded, cv2.IMREAD_COLOR)
+                print(f"Frame received: {frame.shape}")
 
                 self.show_peer_video(frame)
 
