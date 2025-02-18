@@ -7,9 +7,9 @@ import tkinter as tk
 from tkinter import simpledialog, scrolledtext
 
 # Configuration
-PORT_TEXT = 12345  # Text messages
-PORT_VIDEO = 12346  # Video stream
-BUFFER_SIZE = 4096  # UDP packet size
+PORT_TEXT = 12345  
+PORT_VIDEO = 12346  
+BUFFER_SIZE = 4096  
 
 class P2PChat:
     def __init__(self, root):
@@ -31,7 +31,7 @@ class P2PChat:
         self.exit_button.pack(padx=10, pady=5, fill=tk.X)
 
         # Networking
-        self.my_ip = socket.gethostbyname(socket.gethostname())  # Get local IP
+        self.my_ip = socket.gethostbyname(socket.gethostname())  
         self.sock_text = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock_text.bind((self.my_ip, PORT_TEXT))
 
@@ -42,6 +42,7 @@ class P2PChat:
         threading.Thread(target=self.receive_messages, daemon=True).start()
         threading.Thread(target=self.send_video, daemon=True).start()
         threading.Thread(target=self.receive_video, daemon=True).start()
+        threading.Thread(target=self.show_my_video, daemon=True).start()  # NEW: Show own video
 
     def receive_messages(self):
         """Receive messages and display in chat"""
@@ -69,15 +70,15 @@ class P2PChat:
 
     def send_video(self):
         """Send video frames"""
-        cap = cv2.VideoCapture(0)  # Capture from webcam
+        cap = cv2.VideoCapture(0)  
         sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         while self.running:
             ret, frame = cap.read()
             if not ret:
+                print("[ERROR] Failed to read video frame.")
                 break
 
-            # Compress frame (JPEG)
             _, frame_encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
             data = pickle.dumps(frame_encoded)
 
@@ -91,12 +92,12 @@ class P2PChat:
         cap.release()
 
     def receive_video(self):
-        """Receive and reconstruct video frames"""
+        """Receive and display peer's video"""
         sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock_video.bind((self.my_ip, PORT_VIDEO))
 
         data = b""
-        payload_size = struct.calcsize("Q")  # 8-byte size header
+        payload_size = struct.calcsize("Q")  
 
         while self.running:
             try:
@@ -117,17 +118,29 @@ class P2PChat:
                 frame_data = data[:msg_size]
                 data = data[msg_size:]
 
-                # Decode and display frame
+                # Decode and show received video
                 frame_encoded = pickle.loads(frame_data)
                 frame = cv2.imdecode(frame_encoded, cv2.IMREAD_COLOR)
 
-                cv2.imshow("Video Chat", frame)
-                if cv2.waitKey(1) == 27:  # Press 'Esc' to exit
+                cv2.imshow("Peer's Video", frame)
+                if cv2.waitKey(1) == 27:  
                     break
             except:
                 break
 
         sock_video.close()
+        cv2.destroyAllWindows()
+
+    def show_my_video(self):
+        """Show local webcam feed"""
+        cap = cv2.VideoCapture(0)  
+        while self.running:
+            ret, frame = cap.read()
+            if ret:
+                cv2.imshow("My Video", frame)
+                if cv2.waitKey(1) == 27:  
+                    break
+        cap.release()
         cv2.destroyAllWindows()
 
     def exit_chat(self):
