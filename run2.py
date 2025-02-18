@@ -9,7 +9,7 @@ from tkinter import simpledialog, scrolledtext
 # Configuration
 PORT_TEXT = 12345  # Text messages
 PORT_VIDEO = 12346  # Video stream
-BUFFER_SIZE = 4096  # UDP packet size
+BUFFER_SIZE = 8192  # UDP packet size
 
 class P2PChat:
     def __init__(self, root):
@@ -67,9 +67,16 @@ class P2PChat:
             self.chat_area.config(state=tk.DISABLED)
             self.entry.delete(0, tk.END)
 
+    def display_video(self, frame, window_name="Video Chat"):
+        """Display the video frame in a separate thread"""
+        cv2.imshow(window_name, frame)
+        cv2.waitKey(1)
+
     def send_video(self):
         """Send video frames"""
         cap = cv2.VideoCapture(0)  # Capture from webcam
+        cap.set(3, 640)  # Set resolution
+        cap.set(4, 480)
         sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         while self.running:
@@ -88,8 +95,8 @@ class P2PChat:
             for i in range(0, len(data), BUFFER_SIZE):
                 sock_video.sendto(data[i:i + BUFFER_SIZE], (self.target_ip, PORT_VIDEO))
 
-            # Display the local webcam feed
-            cv2.imshow("Local Video Feed", frame)
+            # Display the local webcam feed in a separate thread
+            threading.Thread(target=self.display_video, args=(frame, "My Video Feed"), daemon=True).start()
 
         cap.release()
 
@@ -120,14 +127,15 @@ class P2PChat:
                 frame_data = data[:msg_size]
                 data = data[msg_size:]
 
-                # Decode and display frame
+                # Decode frame
                 frame_encoded = pickle.loads(frame_data)
                 frame = cv2.imdecode(frame_encoded, cv2.IMREAD_COLOR)
 
-                cv2.imshow("Video Chat", frame)
-                if cv2.waitKey(1) == 27:  # Press 'Esc' to exit
-                    break
-            except:
+                # Display received video frame in a separate thread
+                threading.Thread(target=self.display_video, args=(frame, "Peer's Video Feed"), daemon=True).start()
+
+            except Exception as e:
+                print(f"Error receiving video: {e}")
                 break
 
         sock_video.close()
