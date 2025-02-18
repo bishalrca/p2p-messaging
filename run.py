@@ -11,7 +11,6 @@ from PIL import Image, ImageTk
 PORT_TEXT = 12345
 PORT_VIDEO = 12346
 BUFFER_SIZE = 4096 * 10
-PORT_AUDIO = 12347  # Port for audios
 
 class P2PChat:
     def __init__(self, root):
@@ -247,73 +246,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = P2PChat(root)
     root.mainloop()
-
-
-
-import pyaudio
-import numpy as np
-
-class P2PChat:
-    def __init__(self, root):
-        # Existing initialization code...
-        
-        # Audio configurations
-        self.chunk_size = 1024
-        self.sample_format = pyaudio.paInt16
-        self.channels = 1
-        self.rate = 44100
-
-        # Initialize PyAudio for audio capture
-        self.audio = pyaudio.PyAudio()
-
-        # Initialize socket for audio transmission
-        self.sock_audio = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-        # Start audio threads
-        threading.Thread(target=self.send_audio, daemon=True).start()
-        threading.Thread(target=self.receive_audio, daemon=True).start()
-
-    def send_audio(self):
-        """Capture and send audio data."""
-        stream = self.audio.open(format=self.sample_format,
-                                 channels=self.channels,
-                                 rate=self.rate,
-                                 frames_per_buffer=self.chunk_size,
-                                 input=True)
-        
-        while self.running:
-            try:
-                # Read audio data from the microphone
-                audio_data = stream.read(self.chunk_size)
-                
-                # Send the audio data over UDP
-                self.sock_audio.sendto(audio_data, (self.target_ip, PORT_AUDIO))
-            except Exception as e:
-                print(f"[ERROR] Audio send error: {e}")
-                break
-
-    def receive_audio(self):
-        """Receive and play audio data from the peer."""
-        sock_audio_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock_audio_recv.bind((self.my_ip, PORT_AUDIO))
-
-        while self.running:
-            try:
-                # Receive audio data
-                audio_data, _ = sock_audio_recv.recvfrom(self.chunk_size)
-                
-                # Play the received audio data
-                self.play_audio(audio_data)
-            except Exception as e:
-                print(f"[ERROR] Audio receive error: {e}")
-                break
-
-    def play_audio(self, audio_data):
-        """Play received audio data."""
-        stream = self.audio.open(format=self.sample_format,
-                                 channels=self.channels,
-                                 rate=self.rate,
-                                 frames_per_buffer=self.chunk_size,
-                                 output=True)
-        stream.write(audio_data)
 
