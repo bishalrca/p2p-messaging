@@ -49,7 +49,7 @@ class P2PChat:
         self.video_frame.grid_columnconfigure(1, weight=1)
 
         # Audio configurations
-        self.chunk_size = 1024
+        self.chunk_size = 1024 * 50
         self.sample_format = pyaudio.paInt16
         self.channels = 1
         self.rate = 44100
@@ -108,14 +108,19 @@ class P2PChat:
         while self.running:
             try:
                 packet, _ = sock_audio_recv.recvfrom(self.chunk_size)
+                if not packet:
+                    continue
+
+                print(f"🔊 Received {len(packet)} bytes of audio data.")  # Debugging
+
                 data += packet
                 if len(data) >= self.chunk_size:
-                    print(f"Received {len(data)} bytes of audio data.")
                     self.play_audio(data)
-                    data = b""  # Reset data after playing
+                    data = b""  # Reset buffer
             except Exception as e:
                 print(f"[ERROR] Audio receive error: {e}")
                 break
+
 
 
     def play_audio(self, audio_data):
@@ -127,14 +132,18 @@ class P2PChat:
                                                     rate=self.rate,
                                                     frames_per_buffer=self.chunk_size,
                                                     output=True)
+                print("✅ Audio Stream Initialized.")
             except Exception as e:
                 print(f"[ERROR] Failed to initialize audio stream: {e}")
                 return
 
         try:
+            print(f"🎵 Playing {len(audio_data)} bytes of audio data.")  # Debugging
             self.audio_stream.write(audio_data)
         except Exception as e:
             print(f"[ERROR] Failed to play audio: {e}")
+
+            
 
 
 
