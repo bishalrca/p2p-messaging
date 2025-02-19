@@ -1,27 +1,32 @@
 import socket
 import threading
 import pyaudio
-import cv2
-import pickle
 import struct
-import tkinter as tk
-from tkinter import simpledialog, scrolledtext
-from PIL import Image, ImageTk
 import queue
 import time
 import numpy as np
+import noisereduce as nr
+import tkinter as tk
+from tkinter import simpledialog, scrolledtext
+from PIL import Image, ImageTk
+import cv2
+import pickle
 
 # Configuration
 PORT_TEXT = 12345
 PORT_VIDEO = 12346
-PORT_AUDIO = 12347  # Port for audio
+PORT_AUDIO = 5000  # Port for audio, updated to match the provided example
 BUFFER_SIZE = 4096 * 10
+CHUNK = 1024
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 44100
 
 # Create a queue for audio data
-audio_queue = queue.Queue(maxsize=10)  # Buffer size for audio queue
+audio_queue = queue.PriorityQueue()  # Priority queue for audio packet handling
 
-# Audio silence detection threshold
-SILENCE_THRESHOLD = 1000  # RMS threshold to consider as silence
+# Sequence number tracking for audio
+latest_sequence = -1
 
 class P2PChat:
     def __init__(self, root):
@@ -58,12 +63,6 @@ class P2PChat:
         self.video_frame.grid_columnconfigure(1, weight=1)
 
         # Audio configurations
-        self.chunk_size = 1024 * 30
-        self.sample_format = pyaudio.paInt16
-        self.channels = 1
-        self.rate = 44100
-
-        # Initialize PyAudio for audio capture
         self.audio = pyaudio.PyAudio()
 
         # Networking setup for text, video, and audio
@@ -72,7 +71,6 @@ class P2PChat:
         self.sock_text.bind((self.my_ip, PORT_TEXT))
 
         self.sock_video = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock_audio = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
         # User input for peer IP
         self.target_ip = simpledialog.askstring("Target IP", "Enter Peer IP:")
@@ -85,82 +83,67 @@ class P2PChat:
         threading.Thread(target=self.receive_video, daemon=True).start()
         threading.Thread(target=self.send_audio, daemon=True).start()
         threading.Thread(target=self.receive_audio, daemon=True).start()
-        threading.Thread(target=self.play_audio_from_queue, daemon=True).start()
 
     def send_audio(self):
-        """Capture and send audio data."""
-        stream = self.audio.open(format=self.sample_format,
-                                channels=self.channels,
-                                rate=self.rate,
-                                frames_per_buffer=self.chunk_size,
+        """Capture and send audio data with sequence numbers."""
+        stream = self.audio.open(format=FORMAT,
+                                channels=CHANNELS,
+                                rate=RATE,
+                                frames_per_buffer=CHUNK,
                                 input=True)
+        
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        sequence_number = 0  
+        print("Streaming audio...")
         
         while self.running:
             try:
-                # Read audio data from the microphone
-                audio_data = stream.read(self.chunk_size)
-                
-                # Calculate RMS to check if there is actual sound (not silent)
-                rms = np.sqrt(np.mean(np.square(np.frombuffer(audio_data, dtype=np.int16))))
-                
-                if rms > SILENCE_THRESHOLD:
-                    print(f"Sending {len(audio_data)} bytes of audio data with RMS {rms}")  # Log data sent
-                    # Send the audio data over UDP
-                    self.sock_audio.sendto(audio_data, (self.target_ip, PORT_AUDIO))
-                else:
-                    print(f"Silence detected (RMS: {rms}), not sending audio.")
+                data = stream.read(CHUNK, exception_on_overflow=False)
+                packet = struct.pack("!I", sequence_number) + data  # Pack sequence number and audio data
+                server.sendto(packet, (self.target_ip, PORT_AUDIO))  # Send packet to the peer
+                sequence_number += 1
+                time.sleep(CHUNK / RATE)  # Ensure proper sending rate
             except Exception as e:
                 print(f"[ERROR] Audio send error: {e}")
                 break
 
-
     def receive_audio(self):
-        """Receive and queue audio data from the peer."""
-        sock_audio_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock_audio_recv.bind((self.my_ip, PORT_AUDIO))
+        """Receive audio, apply noise reduction, and play it back."""
+        receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        receiver.bind((self.my_ip, PORT_AUDIO))
+
+        stream = self.audio.open(format=FORMAT,
+                                 channels=CHANNELS,
+                                 rate=RATE,
+                                 output=True,
+                                 frames_per_buffer=CHUNK)
+
+        global latest_sequence
 
         while self.running:
             try:
-                packet, _ = sock_audio_recv.recvfrom(self.chunk_size)
-                if not audio_queue.full():  # Check if the queue is not full
-                    audio_queue.put(packet)  # Add the packet to the queue
-                else:
-                    print("[WARNING] Audio queue is full, discarding packet")
+                packet, _ = receiver.recvfrom(CHUNK + 4)  # 4 bytes for sequence number
+                sequence_number = struct.unpack("!I", packet[:4])[0]  # Extract sequence number
+                audio_data = packet[4:]  # Extract actual audio data
+
+                audio_queue.put((sequence_number, audio_data))  # Add to queue for processing
+
+                if audio_queue.qsize() > 0:  # Play the audio as it comes in
+                    sequence_number, data = audio_queue.get()
+                    if sequence_number == latest_sequence + 1 or latest_sequence == -1:
+                        # Apply noise reduction on audio data
+                        audio_array = np.frombuffer(data, dtype=np.int16)
+                        reduced_audio = nr.reduce_noise(y=audio_array, sr=RATE)
+                        cleaned_data = reduced_audio.astype(np.int16).tobytes()
+                        stream.write(cleaned_data)  # Play the cleaned audio
+                        latest_sequence = sequence_number
+                    elif sequence_number > latest_sequence + 1:
+                        print(f"Packet loss detected! Expected {latest_sequence + 1}, got {sequence_number}")
+                        latest_sequence = sequence_number
+
             except Exception as e:
                 print(f"[ERROR] Audio receive error: {e}")
-                break
-
-    def play_audio(self, audio_data):
-        """Play received audio data."""
-        if not hasattr(self, 'audio_stream') or self.audio_stream is None:
-            try:
-                self.audio_stream = self.audio.open(format=self.sample_format,
-                                                    channels=self.channels,
-                                                    rate=self.rate,
-                                                    frames_per_buffer=self.chunk_size,
-                                                    output=True)
-            except Exception as e:
-                print(f"[ERROR] Failed to initialize audio stream: {e}")
-                return
-
-        try:
-            self.audio_stream.write(audio_data)
-        except Exception as e:
-            print(f"[ERROR] Failed to play audio: {e}")
-
-    def play_audio_from_queue(self):
-        """Dequeue and play audio data."""
-        while self.running:
-            try:
-                if not audio_queue.empty():  # If there is data to play
-                    audio_data = audio_queue.get_nowait()  # Get the audio data from the queue (non-blocking)
-                    self.play_audio(audio_data)  # Play the audio
-                    audio_queue.task_done()  # Mark the task as done
-                else:
-                    # If the queue is empty, sleep for a short time to avoid busy-waiting
-                    time.sleep(0.01)
-            except Exception as e:
-                print(f"[ERROR] Audio play error: {e}")
                 break
 
     def send_video(self):
@@ -316,7 +299,7 @@ class P2PChat:
         self.running = False
         self.sock_text.close()
         self.sock_video.close()
-        self.sock_audio.close()  # Close audio socket
+        # self.sock_audio.close()  # Close audio socket
         self.audio.terminate()   # Clean up PyAudio resources
         self.root.quit()
 
